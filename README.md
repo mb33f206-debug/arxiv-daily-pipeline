@@ -4,6 +4,8 @@
 
 > 本專案完全透過 **Vibe Coding** 開發——從工作流設計、除錯到部署，全程以 Claude Code 作為 AI 驅動的開發夥伴。
 
+**[作品集完整導覽（含開發過程與設計思考）](https://hackmd.io/@tYriCP5OSzuVXnDOe5UwOA/BJ5HA6YuZg)**
+
 ## 系統架構
 
 ```
