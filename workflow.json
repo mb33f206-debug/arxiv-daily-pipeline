@@ -1,0 +1,139 @@
+{
+  "name": "arXiv 每日論文學習",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "hours", "hoursInterval": 24}]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "id": "node-schedule",
+      "name": "每日觸發"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://export.arxiv.org/api/query?search_query=%28cat:cs.RO+OR+cat:cs.CV%29+AND+%28all:%22robotic+arm%22+OR+all:%22robot+manipulation%22+OR+all:%22machine+vision%22+OR+all:%22visual+perception%22+OR+all:%22motion+planning%22+OR+all:%22grasp+planning%22+OR+all:%22visual+servoing%22%29&sortBy=submittedDate&sortOrder=descending&max_results=10",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [220, 0],
+      "id": "node-arxiv",
+      "name": "抓取 arXiv"
+    },
+    {
+      "parameters": {
+        "jsCode": "const xml = $input.first().json.data;\nconst entries = [];\nconst entryRegex = /<entry>[\\s\\S]*?<\\/entry>/g;\nlet match;\nwhile ((match = entryRegex.exec(xml)) !== null) {\n  const entry = match[0];\n  const title = (entry.match(/<title>([\\s\\S]*?)<\\/title>/) || [])[1]?.replace(/\\n/g, ' ').trim();\n  const summary = (entry.match(/<summary>([\\s\\S]*?)<\\/summary>/) || [])[1]?.replace(/\\n/g, ' ').trim();\n  const id = (entry.match(/<id>([\\s\\S]*?)<\\/id>/) || [])[1]?.trim();\n  const published = (entry.match(/<published>([\\s\\S]*?)<\\/published>/) || [])[1]?.trim();\n  const authorRegex = /<author>\\s*<name>([\\s\\S]*?)<\\/name>/g;\n  const authors = [];\n  let authorMatch;\n  while ((authorMatch = authorRegex.exec(entry)) !== null) {\n    authors.push(authorMatch[1].trim());\n  }\n  const catRegex = /category[^>]*term=\"([^\"]*)\"/g;\n  const categories = [];\n  let catMatch;\n  while ((catMatch = catRegex.exec(entry)) !== null) {\n    categories.push(catMatch[1]);\n  }\n  entries.push({ title, summary, url: id, published, authors: authors.join(', '), categories: categories.join(', ') });\n}\n// 只取最近 3 天內發表的論文，避免重複\nconst now = new Date();\nconst threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);\nconst recent = entries.filter(e => new Date(e.published) >= threeDaysAgo);\n// 如果近 3 天不足 3 篇，擴大到 7 天\nconst sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);\nconst fallback = entries.filter(e => new Date(e.published) >= sevenDaysAgo);\nconst pool = recent.length >= 3 ? recent : fallback;\nif (pool.length === 0) {\n  return [{ json: { title: '今日無新論文', summary: '過去 7 天內無符合條件的新論文', url: '', published: now.toISOString(), authors: '', categories: '' } }];\n}\nreturn pool.slice(0, 3).map(e => ({ json: e }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0],
+      "id": "node-parse",
+      "name": "解析論文 Top 3"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_LLM_API_ENDPOINT/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gemini-2.5-pro', messages: [{ role: 'system', content: '你是一位在頂尖大學任教的教授，專精於機器人操作（robotic manipulation）、電腦視覺（computer vision）、運動規劃（motion planning）與視覺伺服（visual servoing）領域，擁有 20 年研究與指導研究生的經驗。\\n\\n你的任務是為碩博士研究生撰寫高品質的論文深度學習筆記。你的筆記以「深入淺出」著稱——能將複雜的數學與演算法拆解成直覺的理解，同時不失學術嚴謹性。\\n\\n寫作原則：\\n1. 全程使用繁體中文，專有名詞首次出現時以「中文翻譯（English Term）」格式呈現\\n2. 用具體的例子和類比解釋抽象概念，讓讀者建立直覺\\n3. 不只描述「做了什麼」，更要解釋「為什麼這樣做」和「這在更大的研究脈絡中代表什麼意義」\\n4. 對於摘要中未明確提及但可合理推斷的技術細節，標註「[推測]」\\n5. 每個段落都要有足夠的深度，寧可詳細也不要簡略帶過' }, { role: 'user', content: '請深入分析以下論文，產出一份完整的學術學習筆記：\\n\\n標題：' + $json.title + '\\n\\n摘要：' + $json.summary + '\\n\\n---\\n\\n請嚴格依照以下格式與要求產出：\\n\\n## 一句話總結\\n用一句中文精準概括這篇論文最核心的貢獻（30字以內）。\\n\\n## 論文摘要（中文）\\n用 400 字左右的中文完整說明。\\n\\n## 研究背景與動機\\n### 領域現況\\n### 痛點分析\\n### 本論文的切入角度\\n\\n## 核心貢獻與創新點\\n\\n## 方法論詳解\\n### 整體架構\\n### 關鍵技術模組\\n### 損失函數 / 訓練策略\\n### 與現有方法的關鍵差異\\n\\n## 實驗結果與分析\\n\\n## 心智圖（Markmap）\\n\\n## 簡報大綱（10 張投影片）\\n\\n## 關鍵詞彙表\\n\\n## 論文評析\\n\\n## 與機械手臂 / 機器視覺研究的關聯性\\n\\n## 實作可行性\\n\\n## 延伸閱讀' }], temperature: 0.3, max_tokens: 12000 }) }}",
+        "options": {
+          "timeout": 180000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 65000
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [660, 0],
+      "id": "node-gemini",
+      "name": "Gemini 分析論文"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst today = new Date().toISOString().slice(0, 10);\nlet markdown = '<style>\\n@import url(\"https://fonts.googleapis.com/css2?family=LXGW+WenKai+TC:wght@300;400;700&display=swap\");\\n.markdown-body {\\n  font-family: \"Times New Roman\", \"LXGW WenKai TC\", serif;\\n  font-size: 16px;\\n  line-height: 1.9;\\n}\\n.markdown-body h1, .markdown-body h2, .markdown-body h3 {\\n  font-family: \"LXGW WenKai TC\", \"Times New Roman\", serif;\\n  font-weight: 700;\\n}\\n.markdown-body code {\\n  font-family: \"Cascadia Code\", \"Fira Code\", monospace;\\n}\\n.markdown-body table {\\n  font-size: 15px;\\n}\\n</style>\\n\\n';\nmarkdown += '# arXiv 每日論文筆記 - ' + today + '\\n\\n';\nmarkdown += '> **自動抓取分類**: cs.RO (機器人) / cs.CV (電腦視覺)\\n';\nmarkdown += '> **關鍵字**: robotic arm, robot manipulation, machine vision, visual perception, motion planning, grasp planning, visual servoing\\n';\nmarkdown += '> **分析模型**: gemini-2.5-pro\\n\\n';\nmarkdown += '---\\n\\n';\nmarkdown += '## 目錄\\n\\n';\nfor (let i = 0; i < items.length; i++) {\n  const paperInfo = $('解析論文 Top 3').all()[i]?.json;\n  markdown += (i + 1) + '. [' + (paperInfo?.title || 'Unknown') + '](#論文-' + (i + 1) + ')\\n';\n}\nmarkdown += '\\n---\\n\\n';\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i].json;\n  const paperInfo = $('解析論文 Top 3').all()[i]?.json;\n  let content = '';\n  try {\n    content = item.choices?.[0]?.message?.content || JSON.stringify(item);\n  } catch(e) {\n    content = JSON.stringify(item);\n  }\n  markdown += '# 論文 ' + (i + 1) + ': ' + (paperInfo?.title || 'Unknown') + '\\n\\n';\n  markdown += '| 項目 | 內容 |\\n|---|---|\\n';\n  markdown += '| **連結** | ' + (paperInfo?.url || 'N/A') + ' |\\n';\n  markdown += '| **作者** | ' + (paperInfo?.authors || 'N/A') + ' |\\n';\n  markdown += '| **發布日期** | ' + (paperInfo?.published || 'N/A') + ' |\\n';\n  markdown += '| **分類** | ' + (paperInfo?.categories || 'N/A') + ' |\\n\\n';\n  markdown += content + '\\n\\n---\\n\\n';\n}\nreturn [{ json: { markdown, title: 'arXiv 論文筆記 ' + today } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 0],
+      "id": "node-combine",
+      "name": "合併成 HackMD 格式"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hackmd.io/v1/notes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HACKMD_API_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: $json.title, content: $json.markdown, readPermission: 'owner', writePermission: 'owner' }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1100, 0],
+      "id": "node-hackmd",
+      "name": "發布到 HackMD"
+    }
+  ],
+  "connections": {
+    "每日觸發": {
+      "main": [[{"node": "抓取 arXiv", "type": "main", "index": 0}]]
+    },
+    "抓取 arXiv": {
+      "main": [[{"node": "解析論文 Top 3", "type": "main", "index": 0}]]
+    },
+    "解析論文 Top 3": {
+      "main": [[{"node": "Gemini 分析論文", "type": "main", "index": 0}]]
+    },
+    "Gemini 分析論文": {
+      "main": [[{"node": "合併成 HackMD 格式", "type": "main", "index": 0}]]
+    },
+    "合併成 HackMD 格式": {
+      "main": [[{"node": "發布到 HackMD", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
